@@ -23,6 +23,7 @@ export default {
   prod: false,
   wsClients: new Set(),
   plugins: [],
+  generators: [],
 
   // Sets environment flags.
   flags({dev, prod}) {
@@ -65,13 +66,15 @@ export default {
 
   // Resolves all configured plugins into Bun plugin instances.
   async loadPlugins() {
-    this.plugins = await resolvePlugins(this.config.plugins, {
+    const {plugins, generators} = await resolvePlugins(this.config.plugins, {
       root: this.root,
       config: this.config,
       dev: this.dev,
       prod: this.prod,
       manifest: this.manifest
     })
+    this.plugins = plugins
+    this.generators = generators
   },
 
   // Returns the output directory.
@@ -196,6 +199,7 @@ export default {
     const start = performance.now()
     this.loadConfig()
     await this.loadPlugins()
+    for (const gen of this.generators) await gen.run()
     this.cleanOutDir()
     await this.copyStaticAssets()
     await this.buildJS()

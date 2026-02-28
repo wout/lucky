@@ -1,6 +1,6 @@
 import {describe, test, expect, beforeEach, afterAll} from 'bun:test'
 import {mkdirSync, writeFileSync, rmSync, existsSync, readFileSync} from 'fs'
-import {join} from 'path'
+import {dirname, join} from 'path'
 import LuckyBun from '../../src/bun/lucky.js'
 
 const TEST_DIR = join(process.cwd(), '.test-tmp')
@@ -11,6 +11,7 @@ beforeEach(() => {
   LuckyBun.manifest = {}
   LuckyBun.config = null
   LuckyBun.plugins = []
+  LuckyBun.generators = []
   LuckyBun.prod = false
   LuckyBun.dev = false
   LuckyBun.root = TEST_DIR
@@ -385,6 +386,64 @@ describe('loadPlugins', () => {
     expect(LuckyBun.plugins).toHaveLength(1)
     expect(LuckyBun.plugins[0].name).toBe('css-transforms')
   })
+
+  test('loads generator plugins', async () => {
+    createFile(
+      'config/bun/gen.js',
+      `export default function() {
+        return { run() {} }
+      }`
+    )
+    createFile(
+      'config/bun.json',
+      JSON.stringify({plugins: {generate: ['config/bun/gen.js']}})
+    )
+    LuckyBun.loadConfig()
+    await LuckyBun.loadPlugins()
+
+    expect(LuckyBun.generators).toHaveLength(1)
+    expect(LuckyBun.plugins).toHaveLength(0)
+  })
+
+  test('rejects generator missing run method', async () => {
+    createFile(
+      'config/bun/bad-gen.js',
+      `export default function() {
+        return { notRun: true }
+      }`
+    )
+    createFile(
+      'config/bun.json',
+      JSON.stringify({plugins: {generate: ['config/bun/bad-gen.js']}})
+    )
+    LuckyBun.loadConfig()
+    await LuckyBun.loadPlugins()
+
+    expect(LuckyBun.generators).toHaveLength(0)
+  })
+
+  test('loads generators alongside transform plugins', async () => {
+    createFile(
+      'config/bun/gen.js',
+      `export default function() {
+        return { run() {} }
+      }`
+    )
+    createFile(
+      'config/bun.json',
+      JSON.stringify({
+        plugins: {
+          css: ['cssAliases'],
+          generate: ['config/bun/gen.js']
+        }
+      })
+    )
+    LuckyBun.loadConfig()
+    await LuckyBun.loadPlugins()
+
+    expect(LuckyBun.plugins).toHaveLength(1)
+    expect(LuckyBun.generators).toHaveLength(1)
+  })
 })
 
 describe('cssAliases plugin', () => {
@@ -757,6 +816,40 @@ describe('full build', () => {
 
     expect(existsSync(join(TEST_DIR, 'public/assets/js/stale.js'))).toBe(false)
     expect(existsSync(join(TEST_DIR, 'public/assets/js/app.js'))).toBe(true)
+  })
+
+  test('runs generators before building assets', async () => {
+    const generatedPath = join(TEST_DIR, 'src/css/generated/tokens.css')
+    createFile(
+      'src/css/app.css',
+      [
+        "@import './generated/tokens.css';",
+        'body { color: var(--color-primary) }'
+      ].join('\n')
+    )
+    createFile('src/js/app.js', 'console.log("ok")')
+    await setupProject(
+      {},
+      {plugins: {css: ['cssAliases', 'cssGlobs'], js: ['jsGlobs']}}
+    )
+    LuckyBun.generators = [
+      {
+        run() {
+          mkdirSync(dirname(generatedPath), {recursive: true})
+          writeFileSync(generatedPath, ':root { --color-primary: red }')
+        }
+      }
+    ]
+    for (const gen of LuckyBun.generators) await gen.run()
+
+    expect(existsSync(generatedPath)).toBe(true)
+
+    LuckyBun.cleanOutDir()
+    await LuckyBun.buildCSS()
+    const cssPath = join(TEST_DIR, 'public/assets/css/app.css')
+    const content = readFileSync(cssPath, 'utf-8')
+
+    expect(content).toContain('--color-primary')
   })
 })
 

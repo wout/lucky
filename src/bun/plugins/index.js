@@ -26,43 +26,36 @@ function transformPipeline(type, transforms) {
   }
 }
 
-// Resolves a plugin name or path into a transform fucntion or Bun plugin.
-async function loadFactory(name, root) {
-  if (builtins[name]) return builtins[name]
-
-  try {
-    const mod = await import(join(root, name))
-    console.log(` ▸ Loaded custom plugin: ${name}`)
-    return mod.default || mod
-  } catch (err) {
-    console.error(` ✖ Failed to load plugin "${name}": ${err.message}`)
-  }
-}
-
 // Resolves plugin config into Bun plugin instances.
 export async function resolvePlugins(pluginConfig, context) {
   const bunPlugins = []
+  const generators = []
 
-  if (!pluginConfig || typeof pluginConfig !== 'object') return bunPlugins
+  if (!pluginConfig || typeof pluginConfig !== 'object')
+    return {plugins: bunPlugins, generators}
 
   for (const [type, names] of Object.entries(pluginConfig)) {
     if (!Array.isArray(names)) continue
+
+    if (type === 'generate') {
+      for (const name of names) {
+        const result = await loadPlugin(name, context)
+        if (result?.run) generators.push(result)
+        else if (result != null)
+          console.error(` ✖ Generator "${name}" must return { run() }`)
+      }
+      continue
+    }
 
     if (TYPE_REGEXES[type]) {
       const transforms = []
 
       for (const name of names) {
-        const factory = await loadFactory(name, context.root)
-        if (typeof factory !== 'function') {
-          if (factory != null)
-            console.error(` ✖ Plugin "${name}" does not export a function`)
-          continue
-        }
-
-        const result = factory(context)
+        const result = await loadPlugin(name, context)
         if (typeof result === 'function') transforms.push(result)
         else if (result?.setup) bunPlugins.push(result)
-        else console.error(` ✖ Plugin "${name}" returned an invalid value`)
+        else if (result != null)
+          console.error(` ✖ Plugin "${name}" returned an invalid value`)
       }
 
       if (transforms.length)
@@ -73,5 +66,29 @@ export async function resolvePlugins(pluginConfig, context) {
     console.error(` ✖ Unknown plugin type "${type}"`)
   }
 
-  return bunPlugins
+  return {plugins: bunPlugins, generators}
+}
+
+// Loads and evaluates usability of a plugin.
+async function loadPlugin(name, context) {
+  let factory = builtins[name]
+
+  if (!factory) {
+    try {
+      const mod = await import(join(context.root, name))
+      factory = mod.default || mod
+      if (typeof factory === 'function')
+        console.log(` ▸ Loaded custom plugin: ${name}`)
+    } catch (err) {
+      console.error(` ✖ Failed to load plugin "${name}": ${err.message}`)
+      return null
+    }
+  }
+
+  if (typeof factory !== 'function') {
+    console.error(` ✖ Plugin "${name}" does not export a function`)
+    return null
+  }
+
+  return factory(context)
 }
